@@ -1,0 +1,25 @@
+Package: cy+cpu.arm64
+Essential: yes
+Status: install ok installed
+Priority: required
+Section: System
+Installed-Size: 0
+Architecture: iphoneos-arm
+Version: 0
+Description: virtual CPU dependency
+Maintainer: Jay Freeman (saurik) <saurik@saurik.com>
+Tag: role::cydia
+
+Package: firmware-sbin
+Essential: yes
+Priority: required
+Section: System
+Installed-Size: 0
+Maintainer: Jay Freeman (saurik) <saurik@saurik.com>
+Architecture: iphoneos-arm
+Version: 0-2
+Pre-Depends: dpkg (>= 1.14.25-8)
+Replaces: system-cmds (<= 433.4-11), diskdev-cmds (<= 421.7-3)
+Description: represents Telesphoreo / iPhoneOS conflicts
+Name: iPhone Firmware (/sbin)
+
