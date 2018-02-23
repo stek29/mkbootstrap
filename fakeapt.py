@@ -7,6 +7,16 @@ import io
 from urllib.parse import urlparse
 import re
 from queue import Queue
+import itertools
+from functools import reduce
+
+__all__ = [
+    'Repo',
+    'LocalRepo',
+    'RepoSet',
+    'Package',
+    'PkgReq',
+]
 
 class HashTools:
     """ https://stackoverflow.com/a/3431835/5279817 """
@@ -243,19 +253,31 @@ class VersionReq:
 class PkgReq:
     def __init__(self, s):
         s = s.strip()
-        self.subreqs = [SubPkgReq(sub) for sub in s.split('|')]
+        self._subreqs = set(SubPkgReq(sub) for sub in s.split('|'))
+        self.names = set(sr.name for sr in self._subreqs)
 
-        self.names = set(sr.name for sr in self.subreqs)
-
-    def satisfied_by(self, pkg):
-        for req in self.subreqs:
-            if req.satisfied_by(pkg):
+    def satisfied_by(self, pkg, exact=False):
+        for req in self._subreqs:
+            if req.satisfied_by(pkg, exact):
                 return True
 
         return False
 
     def __repr__(self):
-        return '<{}>'.format(' | '.join(map(repr, self.subreqs)))
+        return '<{}>'.format(' | '.join(map(repr, self._subreqs)))
+
+    def __eq__(self, other):
+        if not isinstance(other, self.__class__):
+            return NotImplemented
+        return self._subreqs == other._subreqs
+
+    def __ne__(self, other):
+        if not isinstance(other, self.__class__):
+            return NotImplemented
+        return self._subreqs != other._subreqs
+
+    def __hash__(self):
+        return reduce(lambda x, y: x ^ hash(y), self._subreqs, 0)
 
 class SubPkgReq:
     def __init__(self, s):
@@ -270,8 +292,8 @@ class SubPkgReq:
             self.name = name
             self.version_req = None
 
-    def satisfied_by(self, pkg):
-        if self.name != pkg.name and self.name not in pkg.provides:
+    def satisfied_by(self, pkg, exact=False):
+        if self.name != pkg.name and (exact or self.name not in pkg.provides):
             return False
 
         if self.version_req:
@@ -280,7 +302,20 @@ class SubPkgReq:
         return True
 
     def __repr__(self):
-        return '<{}{}>'.format(self.name, ' ({})'.format(self.version_req) if self.version_req else '')
+        return '{}{}'.format(self.name, ' ({})'.format(self.version_req) if self.version_req else '')
+
+    def __eq__(self, other):
+        if not isinstance(other, self.__class__):
+            return NotImplemented
+        return self.name == other.name and self.version_req == other.version_req
+
+    def __ne__(self, other):
+        if not isinstance(other, self.__class__):
+            return NotImplemented
+        return self.name != other.name or self.version_req != other.version_req
+
+    def __hash__(self):
+        return hash(self.name) ^ hash(self.version_req)
 
 class Package:
     def __init__(self, asstring, repo=None):
@@ -292,21 +327,33 @@ class Package:
 
         self.filename = self._params.get('Filename')
 
-        self.provides = list()
+        self.provides = set()
         for s in self._params.get('Provides', '').split(','):
             s = s.strip()
             if s:
-                self.provides.append(s.strip())
+                self.provides.add(s.strip())
 
-        self.depends = list()
-        for s in self._params.get('Depends', '').strip().split(',') + self._params.get('Pre-Depends', '').strip().split(','):
-            s = s.strip()
-            if s:
-                try:
-                    self.depends.append(PkgReq(s))
-                except ValueError:
-                    print('Fail on %s: dep %s' % (self, s))
-                    raise 
+        def get_csv_param(key):
+            for s in self._params.get(key, '').strip().split(','):
+                s = s.strip()
+                if s:
+                    yield s
+
+        self.depends = set()
+        for s in itertools.chain(get_csv_param('Depends'), get_csv_param('Pre-Depends')):
+            try:
+                self.depends.add(PkgReq(s))
+            except ValueError:
+                print('Fail on %s: dep %s' % (self, s))
+                raise
+
+        self.conflicts = set()
+        for s in get_csv_param('Conflicts'):
+            try:
+                self.conflicts.add(PkgReq(s))
+            except ValueError:
+                print('Fail on %s: conf %s' % (self, s))
+                raise
 
         self.integrity = {
             'size': int(self._params.get('Size', 0)) or None,
@@ -623,6 +670,7 @@ class RepoSet:
 
         # XXX perform magic woodo on req and not on pkgs to avoid extra lookups
         alldeps = set()
+        allreqs = set()
 
         pkgs = Queue()
         pkgs.put(needed_pkg)
@@ -631,16 +679,24 @@ class RepoSet:
             pkg = pkgs.get()
 
             for req in pkg.depends:
+                if req in allreqs:
+                    continue
+
+                allreqs.add(req)
                 p = self.satisfy_req(req)
 
                 if p is None:
                     raise Exception('Cant satisfy requirement: %s (for pkg %s)' % (req, pkg.name))
 
                 if p not in alldeps and p != needed_pkg:
-                    # print('[ADDED %s] -- because required by %s' %(p, pkg))
+                    # print('[ADDED %s] -- because required by %s' % (p, pkg))
                     alldeps.add(p)
                     if recursive:
                         pkgs.put(p)
+
+        conflict = self._pkgset_has_conflicts(alldeps)
+        if conflict:
+            raise Exception('conflict: {}'.format(conflict))
 
         return alldeps
 
@@ -658,7 +714,28 @@ class RepoSet:
 
         reqdeps.update(deps)
 
+        conflict = self._pkgset_has_conflicts(reqdeps)
+        if conflict:
+            raise Exception('conflict: {}'.format(conflict))
+
         return reqdeps
+
+    @staticmethod
+    def _pkgset_has_conflicts(pkgset):
+        confs = dict()
+        for d in pkgset:
+            for c in d.conflicts:
+                if c in confs:
+                    confs[c] += [d]
+                else:
+                    confs[c] = [d]
+
+        for conf, pkgs in confs.items():
+            for d in pkgset:
+                if conf.satisfied_by(d, exact=True):
+                    return conf, pkgs
+
+        return None
 
     def __str__(self):
         return '<RepoSet with %d repos>' % len(self.repos)
