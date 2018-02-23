@@ -19,7 +19,7 @@ BASE_PKGS = [
     'openssh',
 ]
 
-# XXX make some VirtualRepo instead of LocalRepo(Virtual) shit
+# XXX make some VirtualRepo instead of LocalRepo(Repo) shit
 # NOT ADDED TO sources.list.d
 REPOS = [
     [Repo, 'http://apt.saurik.com/', 'ios', 'main'],
@@ -83,6 +83,11 @@ class Utils:
                 shutil.rmtree(path)
             elif os.path.exists(path):
                 os.remove(path)
+
+    @classmethod
+    def ignore_pkg(cls, pkg):
+        # see cydia firmware.sh
+        return pkg.name == 'firmware' or pkg.name.startswith('gsc.') or pkg.name.startswith('cy+')
         
 
 if __name__ == '__main__':
@@ -112,6 +117,7 @@ if __name__ == '__main__':
     print('Downloading debs')
     if not os.path.isdir('debs'):
         os.mkdir('debs')
+
     for pkg in allpkgs:
         if pkg.filename:
             deb_path = Utils.gen_pkg_deb_path(pkg)
@@ -129,13 +135,17 @@ if __name__ == '__main__':
     print('Generating deb content list files & extracting debs')
     for pkg in allpkgs:
         print('\t', pkg.name, end='\n\t\t')
+        if Utils.ignore_pkg(pkg):
+            print('[IGNORED]', end='\n\t\t')
+            continue
+
         deb_path = Utils.gen_pkg_deb_path(pkg)
         if not os.path.isfile(deb_path):
             print('[virtual]', end='\n\t\t')
             lst = ['/.']
         else:
             lst = Utils.extract_deb_and_get_contents(deb_path, 'strap')
-        
+
         print('\n\t\t'.join(lst))
 
         lst_path = os.path.join('dpkg-lists', pkg.name + '.list')
@@ -178,7 +188,7 @@ if __name__ == '__main__':
         pkg._params['Status'] = 'install ok unpacked' if not MARK_INSTALLED else 'install ok installed'
 
     with open(os.path.join(dpkg_dir_path, 'status'), 'w') as f:
-        f.write('\n\n'.join(p.asstring() for p in allpkgs))
+        f.write('\n\n'.join(p.asstring() for p in allpkgs if not Utils.ignore_pkg(p)))
         # Final newline
         f.write('\n')
 
